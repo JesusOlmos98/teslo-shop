@@ -10,3 +10,4 @@
 ```
 docker-compose up -d
 ```
+4. Levantar `yarn start:dev`
