@@ -38,11 +38,7 @@ export class Product {
         () => ProductImage, (productImage) => productImage.product, { cascade: true, eager: true }
     )
     images?: ProductImage[];
-
-
-
-
-
+    
     @BeforeInsert()
     checkSlugInsert() {
         //* Procedimiento almacenado: SI NO tenemos slug, será el título pero sustituyendo espacios por barrabajas y quitando las apóstrofes

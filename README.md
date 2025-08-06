@@ -10,8 +10,8 @@
 ```
 docker-compose up -d
 ```
-4. Ejecutar seed para pruebas
+4. Levantar `yarn start:dev`
+5. Ejecutar seed para pruebas
 ```
 http://localhost:3000/api/seed
 ```
-5. Levantar `yarn start:dev`
