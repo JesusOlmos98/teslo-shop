@@ -3,9 +3,10 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { Product } from './entities/product.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { PaginationDto } from 'src/common/dtos/pagination.dto';
 import { validate as isUUID } from 'uuid';
+import { ProductImage } from './entities/product-image.entity';
 
 @Injectable()
 export class ProductsService {
@@ -18,9 +19,13 @@ export class ProductsService {
     @InjectRepository(Product)
     private readonly productRepository: Repository<Product>,
 
+    @InjectRepository(ProductImage)
+    private readonly productImageRepository: Repository<ProductImage>,
+
+    private readonly dataSource: DataSource,
   ) { }
 
-  // --------------------------------------- create ---------------------------------------
+  //jos --------------------------------------- create ---------------------------------------
   async create(createProductDto: CreateProductDto) {
 
     try {
@@ -29,11 +34,16 @@ export class ProductsService {
       // if (!createProductDto.slug) createProductDto.slug = createProductDto.title.toLowerCase().replaceAll(' ', '_').replaceAll("'", ''); //* Procedimiento almacenado en product.entity.ts
 
       //* El repository es de TypeORM, es decir, todos los métodos de productRepository son métodos de TypeORM
-      const product = this.productRepository.create(createProductDto);
+      const { images = [], ...productDetails } = createProductDto;
+
+      const product = this.productRepository.create({
+        ...productDetails, // ...createProductDto,
+        images: images.map(image => this.productImageRepository.create({ url: image }))
+      });
 
       await this.productRepository.save(product);
 
-      return product;
+      return { ...product, images };
 
     } catch (error) {
       this.handelDBExceptions(error);
@@ -42,33 +52,43 @@ export class ProductsService {
     // return 'This action adds a new product';
   }
 
-  // --------------------------------------- findAll ---------------------------------------
+  //jos --------------------------------------- findAll ---------------------------------------
   async findAll(paginationDto: PaginationDto) {
 
     const { limit = 10, offset = 0 } = paginationDto;
 
-    return this.productRepository.find({
+    const products = await this.productRepository.find({
       take: limit,
       skip: offset,
+      relations: {
+        images: true,
+      }
     });
+
+    return products.map(products => ({
+      ...products,
+      images: products.images!.map(image => image.url)
+    }))
     // return `This action returns all products`;
   }
 
-  // --------------------------------------- findOne ---------------------------------------
+  //jos --------------------------------------- findOne ---------------------------------------
   async findOne(term: string) {
 
     let product: Product | null;
 
     if (isUUID(term)) product = await this.productRepository.findOneBy({ id: term });
     else {
-      const queryBuilder = this.productRepository.createQueryBuilder();
+      const queryBuilder = this.productRepository.createQueryBuilder('prod');
 
 
       //* Consulta para evaluar si lo recibido por parámetro encaja con el title o slug, el title ambos evaluados en mayúscula y el slug en minúscula
       product = await queryBuilder.where("UPPER(title) = :title or slug =:slug", {
         title: term.toLocaleUpperCase(),
         slug: term.toLocaleLowerCase(),
-      }).getOne();
+      })
+        .leftJoinAndSelect('prod.images', 'prodImages') // Literalmente en la documentación dice que eager no es compatible con queryBuilder, por eso se añade leftJoinAndSelect
+        .getOne();
 
       // product = await this.productRepository.findOneBy({ slug: term });
     }
@@ -83,33 +103,57 @@ export class ProductsService {
     // return `This action returns a #${id} product`;
   }
 
-  // --------------------------------------- update ---------------------------------------
+  //jos --------------------------------------- findOnePlain ---------------------------------------
+  async findOnePlain(term: string) {
+    const product = await this.findOne(term);
+    return { ...product, images: product!.images!.map(image => image.url) };
+  }
+
+  //jos --------------------------------------- update ---------------------------------------
   async update(id: string, updateProductDto: UpdateProductDto) {
 
-    try {
-      const product = await this.productRepository.preload({
-        id: id,
-        ...updateProductDto
-      });
+    const { images, ...toUpdate } = updateProductDto;
+    //* Habría que aclara el "rest" o "spread", 
+    //* en productDetails es rest y en updateProductDto es spread.
+    // const { images = [], ...productDetails } = updateProductDto;
+    const product = await this.productRepository.preload({ id, ...toUpdate });
 
-      if (!product) throw new NotFoundException("Producto no encontrado.");
+    if (!product) throw new NotFoundException("Producto no encontrado.");
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+
+      if (images) {
+        await queryRunner.manager.delete(ProductImage, { product: { id } });
+
+        product.images = images.map(image => this.productImageRepository.create({ url: image }));
+      }
+
+      await queryRunner.manager.save(product);
+      await queryRunner.commitTransaction();
+      await queryRunner.release();
 
       //* Esto funciona bien, pero lo suyo es usar el @BeforeUpdate() de la entidad
       // if (updateProductDto.slug) product.slug = updateProductDto.slug.toLowerCase().replaceAll(' ', '_').replaceAll("'", '');
 
-      await this.productRepository.save(product);
+      // await this.productRepository.save(product); //* Usamos el manager.save()
 
-      return product;
+      return this.findOnePlain(id);
     } catch (error) {
+      await queryRunner.rollbackTransaction();
+      await queryRunner.release();
+
       this.handelDBExceptions(error);
     }
     // return `This action updates a #${id} product`;
   }
 
-  // --------------------------------------- remove ---------------------------------------
+  //jos --------------------------------------- remove ---------------------------------------
   async remove(id: string) {
 
-    // return this.productRepository.delete(id);
     const product = await this.productRepository.findOneBy({ id });
     if (!product) throw new NotFoundException("Producto no encontrado.");
     await this.productRepository.delete({ id });
@@ -117,7 +161,18 @@ export class ProductsService {
     // return `This action removes a #${id} product`;
   }
 
-  // --------------------------------------- handelDBExceptions ---------------------------------------
+    //jos --------------------------------------- remove ---------------------------------------
+async deleteAllProduct(){
+  const query = this.productRepository.createQueryBuilder('prod');
+
+  try{
+    return await query.delete().where({}).execute();
+  } catch (error) {
+    this.handelDBExceptions(error);
+  }
+}
+
+  //jos --------------------------------------- handelDBExceptions ---------------------------------------
   private handelDBExceptions(error: any) {
 
     if (error.code === '23505') throw new InternalServerErrorException(error.detail);
